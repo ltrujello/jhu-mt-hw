@@ -1,0 +1,31 @@
+doing this ind=0 out of 15
+doing this ind=1 out of 15
+doing this ind=2 out of 15
+doing this ind=3 out of 15
+doing this ind=4 out of 15
+doing this ind=5 out of 15
+doing this ind=6 out of 15
+doing this ind=7 out of 15
+doing this ind=8 out of 15
+doing this ind=9 out of 15
+doing this ind=10 out of 15
+doing this ind=11 out of 15
+doing this ind=12 out of 15
+doing this ind=13 out of 15
+doing this ind=14 out of 15
+0 1
+1 6
+2 39
+3 248
+4 911
+5 1001
+6 1001
+7 1001
+8 1001
+9 1001
+10 1001
+11 1001
+12 1001
+13 509
+14 49
+winner: [phrase(english='', logprob=0), phrase(english='honourable', logprob=0.0), phrase(english='senators', logprob=-0.124938733876), phrase(english=', that', logprob=-0.195274576545), phrase(english='has happened', logprob=0.0), phrase(english='here ,', logprob=-0.163856804371), phrase(english='last', logprob=-0.129672244191), phrase(english='Tuesday', logprob=-0.00599036365747), phrase(english='?', logprob=-0.000198262714548)]

@@ -21,7 +21,7 @@ import matplotlib
 #if you are running on the gradx/ugradx/ another cluster, 
 #you will need the following line
 #if you run on a local machine, you can comment it out
-matplotlib.use('agg') 
+# matplotlib.use('agg') 
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 import torch
