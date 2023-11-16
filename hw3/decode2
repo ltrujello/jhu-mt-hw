@@ -8,8 +8,7 @@ optparser = optparse.OptionParser()
 optparser.add_option(
     "-i",
     "--input",
-    dest="input",
-    default="data/input",
+    dest="input", default="data/input",
     help="File containing sentences to translate (default=data/input)",
 )
 optparser.add_option(
@@ -193,44 +192,6 @@ def build_future_cost_table(foreign_sentence):
         cost_table[phrase] = estimated_cost
     return cost_table
 
-
-def generate_all_hypotheses(hypothesis, sentence: tuple[str], future_table, stacks=None):
-    print(f"{hypothesis} {len(sentence)=}")
-    if stacks is None:
-        stacks = []
-        for _ in range(len(sentence) + 1):
-            stacks.append([])
-    if hypothesis.num_words_translated() == len(sentence):
-        return stacks
-    word_inds_translated = hypothesis.all_inds_translated()
-    for subphrase_inds in all_remaining_subphrase(word_inds_translated, sentence):
-        subphrase = tuple(sentence[ind] for ind in subphrase_inds)
-        if subphrase not in tm:
-            print(f"{subphrase=} not in tm")
-            continue
-        for phrase in tm[subphrase]:
-            logprob = hypothesis.logprob + phrase.logprob
-            for word in phrase.english.split():
-                lm_state = hypothesis.lm_state
-                lm_state, word_logprob = lm.score(lm_state, word)
-                logprob += word_logprob
-            new_hypothesis = Hypothesis(subphrase, phrase, logprob, subphrase_inds, lm_state) 
-            new_hypothesis.prev_hypothesis = hypothesis
-            
-            if len(stacks[new_hypothesis.num_words_translated()]) == 50:
-                # Find a hypothesis to replace it
-                new_future_cost = new_hypothesis.future_cost(future_table, sentence)
-                for ind, hypo in enumerate(stacks[new_hypothesis.num_words_translated()]):
-                    hypo_future_cost = hypo.future_cost(future_table, sentence)
-                    if new_future_cost < hypo_future_cost:
-                        stacks[new_hypothesis.num_words_translated()][ind] = new_hypothesis
-                        generate_all_hypotheses(new_hypothesis, sentence, future_table, stacks)
-                        break
-            else:
-                stacks[new_hypothesis.num_words_translated()].append(new_hypothesis)
-                generate_all_hypotheses(new_hypothesis, sentence, future_table, stacks)
-    return stacks
-
 def recombine_hypothesis(stack, new_hypothesis):
     recombined = False
     for ind, hypothesis in enumerate(stack):
@@ -257,7 +218,7 @@ def recombine_hypothesis(stack, new_hypothesis):
 
 
 
-def generate_all_hypotheses2(hypothesis, sentence, future_table):
+def generate_all_hypotheses(hypothesis, sentence, future_table):
     lm_state = lm.begin()
     init_hypothesis =  Hypothesis((), models.phrase("", 0), logprob=0, foreign_word_inds=[], lm_state=lm_state)
     stacks = []
@@ -266,14 +227,13 @@ def generate_all_hypotheses2(hypothesis, sentence, future_table):
     stacks[0].append(init_hypothesis)
 
     for ind, stack in enumerate(stacks):
-        print(f"doing this {ind=} out of {len(stacks)}")
         for hypothesis in stack:
             word_inds_translated = hypothesis.all_inds_translated()
             for subphrase_inds in all_remaining_subphrase(word_inds_translated, sentence):
                 # limit reordering
                 invalid = False
                 for subphrase_ind in subphrase_inds:
-                    if abs(subphrase_ind - ind) > 5:
+                    if abs(subphrase_ind - ind) > 3:
                         invalid = True
                         break
                 if invalid:
@@ -304,7 +264,7 @@ def generate_all_hypotheses2(hypothesis, sentence, future_table):
                         continue 
 
                     # prune stack if too big
-                    if len(stacks[new_hypothesis.num_words_translated()]) > 1000:
+                    if len(stacks[new_hypothesis.num_words_translated()]) > 1500:
                         # Find a hypothesis to replace it
                         new_future_cost = new_hypothesis.future_cost(future_table, sentence)
                         for ind, hypo in enumerate(stacks[new_hypothesis.num_words_translated()]):
@@ -326,146 +286,28 @@ for f in french:
     # the first i words of the input sentence. You should generalize
     # this so that they can represent translations of *any* i words.
     # 6:00 in lecture 6
-    hypothesis = namedtuple("hypothesis", "logprob, lm_state, predecessor, phrase")
-    initial_hypothesis = hypothesis(0.0, lm.begin(), None, None)
-    stacks = [{} for _ in f] + [{}]
-    stacks[0][lm.begin()] = initial_hypothesis
-
-    # Let's create stacks of length one. 
-    # stacks = []
-    # for _ in range(len(f)):
-    #     stacks.append([])
-    # for ind, word in enumerate(f):
-    #     if (word, ) in tm:
-    #         # look at the possible English phrase translations for this word
-    #         for phrase in tm[(word, )]:
-    #             logprob = phrase.logprob
-    #             for word in phrase.english.split():
-    #                 lm_state = lm.begin()
-    #                 _, word_logprob = lm.score(lm_state, word)
-    #                 logprob += word_logprob 
-
-    #             hypothesis = Hypothesis(word, phrase, logprob, [ind])
-    #             stacks[1].append(hypothesis)
-
-    # print(f"{stacks[1]=}")
-    # # Let's create stacks of length two
-    # for hypothesis in stacks[1]:
-    #     for ind in range(len(f)):
-    #         if ind in hypothesis.foreign_word_inds:
-    #             continue
-    #         # look at the possible English phrase translations for this word
-    #         foreign_phrase = f[ind]
-    #         for phrase in tm[(word, )]:
-    #             logprob = hypothesis.logprob + phrase.logprob
-    #             for word in phrase.english.split():
-    #                 lm_state = lm.begin()
-    #                 _, word_logprob = lm.score(lm_state, word)
-    #                 logprob += word_logprob 
-
-    #             new_hypothesis = Hypothesis(foreign_phrase, phrase, logprob, [ind])
-    #             new_hypothesis.prev_hypothesis = hypothesis
-    #             stacks[2].append(new_hypothesis)
-    #             print(f"Word {foreign_phrase=} has {phrase=} with {logprob=}")
-    # # dont forget to include new hypothesis that translate 2 words!
-    # window_size = 2
-    # i = 0
-    # while i + window_size < len(f):
-    #     foreign_phrase = f[i:i+window_size]
-    #     print(f"{foreign_phrase=}")
-    #     if foreign_phrase in tm:
-    #         for phrase in tm[foreign_phrase]:
-    #             logprob = phrase.logprob
-    #             for word in phrase.english.split():
-    #                 _, word_logprob = lm.score(lm_state, word)
-    #                 logprob += word_logprob
-    #             inds = list(range(i, i + window_size))
-    #             hypothesis = Hypothesis(foreign_phrase, phrase, logprob, inds)
-    #             stacks[2].append(hypothesis)
-    #             print(f"{foreign_phrase=} has {phrase=} with {logprob=}")
-    #     i += 1
-    # print(f"{stacks[2]=}")
-
-    # for hypothesis in stacks[2]:
-    #     num_words_translated = hypothesis.num_words_translated()
-    #     if num_words_translated != 2:
-    #         print(f"Error: {hypothesis=} has {num_words_translated=}, expected 2")
 
     lm_state = lm.begin()
     init_hypothesis =  Hypothesis((), (), logprob=0, foreign_word_inds=[], lm_state=lm_state)
-    # a = new_stacks[1][4]
-    # print("Displaying hypotheses starting with ")
-    # print(f"{stacks[1][0]=}")
-    # print(f"{stacks[1][0].all_inds_translated()=}")
-    foreign_sentence = "honorables sénateurs , que se est - il passé ici , mardi dernier".split()
-    future_cost_table = build_future_cost_table(foreign_sentence)
+    
+    future_cost_table = build_future_cost_table(f)
+    stacks = generate_all_hypotheses(init_hypothesis, f, future_cost_table)
+    # for ind, stack in enumerate(stacks):
+    #     print(ind, len(stack))
 
-    new_stacks = generate_all_hypotheses2(init_hypothesis, f, future_cost_table)
-    for ind, thing in enumerate(new_stacks):
-        print(ind, len(thing))
-        # for obj in thing:
-        #     print(f"{obj} {obj.all_inds_translated()} {obj.logprob=} ")
-
-    winner = new_stacks[-1][0]
-    for final_hypothesis in new_stacks[-1]:
+    # find the winner
+    winner = stacks[-1][0]
+    for final_hypothesis in stacks[-1]:
         if abs(final_hypothesis.logprob) < abs(winner.logprob):
             winner = final_hypothesis
 
+    # print the winner's english translation by traversing the list backwards
     translation = []
     hypo = winner
     while hypo is not None:
-        translation.append(hypo.phrase)
+        translation.append(hypo.phrase.english)
         hypo = hypo.prev_hypothesis
     translation.reverse()
-    print(f"winner: {translation}")
+    winner = " ".join(translation).strip()
+    print(winner)
 
-    break
-
-    for i, stack in enumerate(stacks[:-1]):
-        for h in list(sorted(stack.values(), key=lambda h: -h.logprob)[: opts.s]):  # prune
-            for j in range(i + 1, len(f) + 1):
-                print(f"XXX {f[i:j]}")
-                if f[i:j] in tm:
-                    print(f"YYY {tm[f[i:j]]}")
-                    for phrase in tm[f[i:j]]:
-                        logprob = h.logprob + phrase.logprob
-                        lm_state = h.lm_state
-                        for word in phrase.english.split():
-                            (lm_state, word_logprob) = lm.score(lm_state, word)
-                            logprob += word_logprob
-                        logprob += lm.end(lm_state) if j == len(f) else 0.0
-                        new_hypothesis = hypothesis(logprob, lm_state, h, phrase)
-                        if (
-                            lm_state not in stacks[j]
-                            or stacks[j][lm_state].logprob < logprob
-                        ):  # second case is recombination
-                            stacks[j][lm_state] = new_hypothesis
-    print("Stacks of len 1",stacks[1])
-    print("Stacks of len 2",stacks[2])
-    for item in stacks[3]:
-        print(f"Wohoo {item=} {stacks[3][item]=}")
-    winner = max(stacks[-1].values(), key=lambda h: h.logprob)
-
-    def extract_english(h):
-        return (
-            ""
-            if h.predecessor is None
-            else "%s%s " % (extract_english(h.predecessor), h.phrase.english)
-        )
-
-    print(extract_english(winner))
-
-    if opts.verbose:
-
-        def extract_tm_logprob(h):
-            return (
-                0.0
-                if h.predecessor is None
-                else h.phrase.logprob + extract_tm_logprob(h.predecessor)
-            )
-
-        tm_logprob = extract_tm_logprob(winner)
-        sys.stderr.write(
-            "LM = %f, TM = %f, Total = %f\n"
-            % (winner.logprob - tm_logprob, tm_logprob, winner.logprob)
-        )

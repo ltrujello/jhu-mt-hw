@@ -62,7 +62,11 @@ class LM:
             if ngram in self.table:
                 return (ngram[-2:], score + self.table[ngram].logprob)
             else:  # backoff
-                score += self.table[ngram[:-1]].backoff if len(ngram) > 1 else 0.0
+                if len(ngram) > 1:
+                    if ngram[:-1] not in self.table:
+                        score += self.table[("<unk>",)].backoff 
+                    else:
+                        score += self.table[ngram[:-1]].backoff 
                 ngram = ngram[1:]
         return ((), score + self.table[("<unk>",)].logprob)
 

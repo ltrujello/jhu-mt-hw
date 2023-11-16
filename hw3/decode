@@ -89,9 +89,7 @@ for f in french:
             sorted(stack.values(), key=lambda h: -h.logprob)[: opts.s]
         ):  # prune
             for j in range(i + 1, len(f) + 1):
-                print(f"XXX {f[i:j]}")
                 if f[i:j] in tm:
-                    print(f"YYY {tm[f[i:j]]}")
                     for phrase in tm[f[i:j]]:
                         logprob = h.logprob + phrase.logprob
                         lm_state = h.lm_state
@@ -105,10 +103,6 @@ for f in french:
                             or stacks[j][lm_state].logprob < logprob
                         ):  # second case is recombination
                             stacks[j][lm_state] = new_hypothesis
-    print("Stacks of len 1", stacks[1])
-    print("Stacks of len 2", stacks[2])
-    for item in stacks[3]:
-        print(f"Wohoo {item=} {stacks[3][item]=}")
     winner = max(stacks[-1].values(), key=lambda h: h.logprob)
 
     def extract_english(h):
