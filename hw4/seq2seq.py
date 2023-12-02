@@ -114,7 +114,6 @@ def make_vocabs(src_lang_code, tgt_lang_code, train_file):
 def tensor_from_sentence(vocab, sentence):
     """creates a tensor from a raw sentence"""
     indexes = []
-    print(sentence)
     for word in sentence.split():
         try:
             indexes.append(vocab.word2index[word])
@@ -135,12 +134,13 @@ def tensors_from_pair(src_vocab, tgt_vocab, pair):
 ######################################################################
 
 
-class LSTM:
+class LSTM(nn.Module):
     """
     Implements a standard LSTM block with input, output, and forget gates (no peepholes)
     """
 
     def __init__(self, input_size, hidden_size, reverse=False):
+        super(LSTM, self).__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.reverse = reverse  # to handle bidirectional RNNs
@@ -150,7 +150,7 @@ class LSTM:
         self.forget_weights = nn.Linear(input_size + hidden_size, hidden_size)
         self.cell_weights = nn.Linear(input_size + hidden_size, hidden_size)
 
-    def forward_one_step(self, input, hidden, cell_state):
+    def forward(self, input, hidden, cell_state):
         combined = torch.cat((input, hidden), 1)
         # Calculate gates
         input_gate = torch.sigmoid(self.input_weights(combined))
@@ -164,26 +164,26 @@ class LSTM:
 
         return hidden, cell_state
 
-    def forward(self, input: list):
-        hidden = torch.zeros(self.hidden_size)
-        cell_state = torch.zeros(self.hidden_size)
+    # def forward(self, input: list):
+    #     hidden = torch.zeros(self.hidden_size)
+    #     cell_state = torch.zeros(self.hidden_size)
 
-        hidden_states = []
-        if self.reverse:
-            ind = len(input) - 1
-            while ind >= 0:
-                elem = input[ind]
-                hidden, cell_state = self.forward_one_step(elem, hidden, cell_state)
-                hidden_states.append(hidden)
-                ind -= 1
-        else:
-            ind = 0
-            while ind < len(input):
-                hidden, cell_state = self.forward_one_step(elem, hidden, cell_state)
-                hidden_states.append(hidden)
-                ind += 1
+    #     hidden_states = []
+    #     if self.reverse:
+    #         ind = len(input) - 1
+    #         while ind >= 0:
+    #             elem = input[ind]
+    #             hidden, cell_state = self.forward_one_step(elem, hidden, cell_state)
+    #             hidden_states.append(hidden)
+    #             ind -= 1
+    #     else:
+    #         ind = 0
+    #         while ind < len(input):
+    #             hidden, cell_state = self.forward_one_step(elem, hidden, cell_state)
+    #             hidden_states.append(hidden)
+    #             ind += 1
 
-        return hidden_states, hidden, cell_state
+    #     return hidden_states, hidden, cell_state
 
 
 class EncoderRNN(nn.Module):
@@ -212,30 +212,26 @@ class EncoderRNN(nn.Module):
 
         # collect the -> hidden states
         forward_hidden_states = []
-        hidden = self.get_initial_hidden_state()
-        cell_state = self.get_initial_cell_state()
+        left_hidden = self.get_initial_hidden_state()
+        left_cell_state = self.get_initial_cell_state()
         for elem in input:
             one_hot = torch.nn.functional.one_hot(
                 elem, num_classes=self.input_size
             ).float()
             embedding = self.embedding(one_hot)
-            hidden, cell_state = self.right_lstm.forward_one_step(
-                embedding, hidden, cell_state
-            )
-            forward_hidden_states.append(hidden)
+            left_hidden, left_cell_state = self.right_lstm(embedding, left_hidden, left_cell_state)
+            forward_hidden_states.append(left_hidden)
 
         # collect the <- hidden states
         backward_hidden_states = []
         hidden = self.get_initial_hidden_state()
         cell_state = self.get_initial_cell_state()
-        for elem in input:
+        for elem in reversed(input):
             one_hot = torch.nn.functional.one_hot(
                 elem, num_classes=self.input_size
             ).float()
             embedding = self.embedding(one_hot)
-            hidden, cell_state = self.left_lstm.forward_one_step(
-                embedding, hidden, cell_state
-            )
+            hidden, cell_state = self.left_lstm(embedding, hidden, cell_state)
             backward_hidden_states.append(hidden)
 
         # combine the hidden states into annotations
@@ -245,7 +241,7 @@ class EncoderRNN(nn.Module):
                 torch.cat((forward_hidden_states[i], backward_hidden_states[i]), 1)
             )
 
-        return annotations
+        return annotations, left_hidden, left_cell_state
 
     def get_initial_hidden_state(self):
         return torch.zeros(1, self.hidden_size, device=device)
@@ -274,13 +270,12 @@ class AttnDecoderRNN(nn.Module):
         self.output_layer = nn.Linear(4 * hidden_size, output_size)
         self.lstm = LSTM(3 * hidden_size, hidden_size)
         # attention weights
-        self.attn_layer = nn.Linear(3 * hidden_size, 2 * hidden_size)
-        self.attn_output = nn.Linear(2 * hidden_size, 1)
-        self.out = nn.Linear(self.hidden_size, self.output_size)
+        self.attn_layer = nn.Linear(3 * hidden_size, hidden_size)
+        self.attn_output = nn.Linear(hidden_size, 1)
         self.exp = torch.exp
 
     def forward_attn(self, hidden, encoder_state):
-        input = torch.cat((hidden, encoder_state), 1)
+        input = torch.cat((encoder_state, hidden), 1)
         output = self.attn_layer(input)
         output = self.tanh(output)
         output = self.attn_output(output)
@@ -302,6 +297,7 @@ class AttnDecoderRNN(nn.Module):
         ).float()
         one_hot = one_hot.reshape(1, one_hot.shape[0])
         embedding = self.embedding(one_hot)
+        embedding = self.dropout(embedding)
         attn_weights = []
         denom = 0
         for encoder_state in encoder_outputs:
@@ -309,16 +305,18 @@ class AttnDecoderRNN(nn.Module):
 
         for encoder_state in encoder_outputs:
             e_ij = self.forward_attn(hidden, encoder_state)
-            attn_weight = self.exp(e_ij) / denom
-            attn_weights.append(attn_weight)
+            a_ij = self.exp(e_ij) / denom
+            attn_weights.append(a_ij)
 
         # Compute context vector
         context = torch.zeros(1, 2 * self.hidden_size)
-        for i, attn_weight in enumerate(attn_weights):
-            context += attn_weight * encoder_outputs[i]
+        for j in range(len(encoder_outputs)):
+            a_ij = attn_weights[j]
+            h_j = encoder_outputs[j]
+            context +=  a_ij * h_j
 
         # Compute next_hidden state s_{i}
-        next_hidden, cell_state = self.lstm.forward_one_step(
+        next_hidden, cell_state = self.lstm(
             torch.cat((embedding, context), 1), hidden, cell_state
         )
 
@@ -326,7 +324,7 @@ class AttnDecoderRNN(nn.Module):
         output = torch.cat((embedding, hidden, context), 1)
         output = self.output_layer(output)
         log_softmax = self.softmax(output)
-
+        
         return log_softmax, next_hidden, attn_weights, cell_state
 
     def get_initial_hidden_state(self):
@@ -348,24 +346,20 @@ def train(
     criterion,
     max_length=MAX_LENGTH,
 ):
-    encoder_hidden = encoder.get_initial_hidden_state()
-
     # make sure the encoder and decoder are in training mode so dropout is applied
     encoder.train()
     decoder.train()
+    annotations, hidden, cell_state = encoder(input_tensor)
 
-    print(input_tensor)
-    print(target_tensor)
-
-    annotations = encoder.forward(input_tensor)
-
+    # Initialize decoder values
     all_attn_weights = []
-    decoder_input = torch.tensor(0) # start of sentence
-    hidden = decoder.get_initial_hidden_state()
-    cell_state = decoder.get_initial_cell_state()
+    decoder_input = torch.tensor(0)  # start of sentence
+    # hidden = decoder.get_initial_hidden_state()
+    # cell_state = decoder.get_initial_cell_state()
     preds = []
-    for annotation in annotations:
-        log_softmax, hidden, attn_weights, _ = decoder.forward(
+    # Collect model predictions
+    for _ in range(len(target_tensor)):
+        log_softmax, hidden, attn_weights, cell_state = decoder(
             decoder_input, hidden, annotations, cell_state
         )
         ind = log_softmax.argmax()
@@ -373,12 +367,13 @@ def train(
         preds.append(log_softmax)
         all_attn_weights.append(attn_weights)
 
-    # Update the weights in the encoder, decoder based on preds 
+    # Update the weights in the encoder, decoder based on preds
     loss = 0
     for i, pred in enumerate(preds):
-        print(target_tensor.shape, len(preds), len(annotations))
         target = target_tensor[i]
-        print("XXX", pred, target)
+        # target needs to be a one-hot vector
+        print("XXXXXXX", pred, target)
+        print(target)
         loss += criterion(pred, target)
 
     loss.backward()
@@ -402,36 +397,41 @@ def translate(encoder, decoder, sentence, src_vocab, tgt_vocab, max_length=MAX_L
     with torch.no_grad():
         input_tensor = tensor_from_sentence(src_vocab, sentence)
         input_length = input_tensor.size()[0]
-        encoder_hidden = encoder.get_initial_hidden_state()
 
-        encoder_outputs = torch.zeros(max_length, encoder.hidden_size, device=device)
+        # encoder_outputs = torch.zeros(max_length, encoder.hidden_size, device=device)
+        encoder_outputs, hidden, cell_state  = encoder(input_tensor)
+        # encoder_outputs =
 
-        for ei in range(input_length):
-            encoder_output, encoder_hidden = encoder(input_tensor[ei], encoder_hidden)
-            encoder_outputs[ei] += encoder_output[0, 0]
-
-        decoder_input = torch.tensor([[SOS_index]], device=device)
-
-        decoder_hidden = encoder_hidden
-
+        decoder_input = torch.tensor(SOS_index, device=device)
         decoded_words = []
-        decoder_attentions = torch.zeros(max_length, max_length)
-
+        # decoder_attentions = torch.zeros(max_length, max_length)
+        decoder_attentions = []
+        decoder_hidden = hidden
+        # decoder_cell_state = decoder.get_initial_cell_state()
+        decoder_cell_state = cell_state
         for di in range(max_length):
-            decoder_output, decoder_hidden, decoder_attention = decoder(
-                decoder_input, decoder_hidden, encoder_outputs
+            (
+                decoder_output,
+                decoder_hidden,
+                decoder_attention,
+                decoder_cell_state,
+            ) = decoder(
+                decoder_input, decoder_hidden, encoder_outputs, decoder_cell_state
             )
-            decoder_attentions[di] = decoder_attention.data
+            decoder_attentions.append(decoder_attention)
+            print(decoder_output.data)
             topv, topi = decoder_output.data.topk(1)
+            print(topv, topi)
             if topi.item() == EOS_index:
                 decoded_words.append(EOS_token)
+                print(f"breaking at word {di=}")
                 break
             else:
                 decoded_words.append(tgt_vocab.index2word[topi.item()])
 
             decoder_input = topi.squeeze().detach()
 
-        return decoded_words, decoder_attentions[: di + 1]
+        return decoded_words, decoder_attentions
 
 
 ######################################################################
@@ -605,7 +605,13 @@ def main():
 
     # set up optimization/loss
     # .parameters() returns generator
-    params = list(encoder.parameters()) + list(decoder.parameters())  
+    params = (
+        list(encoder.parameters())
+        + list(decoder.parameters())
+        # + list(encoder.right_lstm.parameters())
+        # + list(encoder.left_lstm.parmeters())
+        # + list(decoder.lstm.parameters())
+    )
     optimizer = optim.Adam(params, lr=args.initial_learning_rate)
     criterion = nn.NLLLoss()
 
@@ -620,7 +626,7 @@ def main():
     while iter_num < args.n_iters:
         iter_num += 1
         training_pair = tensors_from_pair(
-            src_vocab, tgt_vocab, train_pairs[10]
+            src_vocab, tgt_vocab, random.choice(train_pairs)
         )
         input_tensor = training_pair[0]
         target_tensor = training_pair[1]
