@@ -349,13 +349,12 @@ def train(
     # make sure the encoder and decoder are in training mode so dropout is applied
     encoder.train()
     decoder.train()
+    optimizer.zero_grad()
     annotations, hidden, cell_state = encoder(input_tensor)
 
     # Initialize decoder values
     all_attn_weights = []
     decoder_input = torch.tensor(0)  # start of sentence
-    # hidden = decoder.get_initial_hidden_state()
-    # cell_state = decoder.get_initial_cell_state()
     preds = []
     # Collect model predictions
     for _ in range(len(target_tensor)):
@@ -372,8 +371,8 @@ def train(
     for i, pred in enumerate(preds):
         target = target_tensor[i]
         # target needs to be a one-hot vector
-        print("XXXXXXX", pred, target)
-        print(target)
+        # print("XXXXXXX", pred, target)
+        # print(target)
         loss += criterion(pred, target)
 
     loss.backward()
@@ -419,12 +418,9 @@ def translate(encoder, decoder, sentence, src_vocab, tgt_vocab, max_length=MAX_L
                 decoder_input, decoder_hidden, encoder_outputs, decoder_cell_state
             )
             decoder_attentions.append(decoder_attention)
-            print(decoder_output.data)
             topv, topi = decoder_output.data.topk(1)
-            print(topv, topi)
             if topi.item() == EOS_index:
                 decoded_words.append(EOS_token)
-                print(f"breaking at word {di=}")
                 break
             else:
                 decoded_words.append(tgt_vocab.index2word[topi.item()])
