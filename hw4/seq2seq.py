@@ -16,8 +16,9 @@ import logging
 import random
 import time
 from io import open
+import numpy as np
 
-import matplotlib
+import matplotlib.pyplot as plt
 
 # if you are running on the gradx/ugradx/ another cluster,
 # you will need the following line
@@ -126,6 +127,7 @@ def tensor_from_sentence(vocab, sentence):
 
 def tensors_from_pair(src_vocab, tgt_vocab, pair):
     """creates a tensor from a raw sentence pair"""
+    print("what is this", pair, type(pair))
     input_tensor = tensor_from_sentence(src_vocab, pair[0])
     target_tensor = tensor_from_sentence(tgt_vocab, pair[1])
     return input_tensor, target_tensor
@@ -219,7 +221,9 @@ class EncoderRNN(nn.Module):
                 elem, num_classes=self.input_size
             ).float()
             embedding = self.embedding(one_hot)
-            left_hidden, left_cell_state = self.right_lstm(embedding, left_hidden, left_cell_state)
+            left_hidden, left_cell_state = self.right_lstm(
+                embedding, left_hidden, left_cell_state
+            )
             forward_hidden_states.append(left_hidden)
 
         # collect the <- hidden states
@@ -305,6 +309,7 @@ class AttnDecoderRNN(nn.Module):
 
         for encoder_state in encoder_outputs:
             e_ij = self.forward_attn(hidden, encoder_state)
+            # compatibility of the i-th translated word to the j-th source word
             a_ij = self.exp(e_ij) / denom
             attn_weights.append(a_ij)
 
@@ -313,7 +318,7 @@ class AttnDecoderRNN(nn.Module):
         for j in range(len(encoder_outputs)):
             a_ij = attn_weights[j]
             h_j = encoder_outputs[j]
-            context +=  a_ij * h_j
+            context += a_ij * h_j
 
         # Compute next_hidden state s_{i}
         next_hidden, cell_state = self.lstm(
@@ -324,7 +329,7 @@ class AttnDecoderRNN(nn.Module):
         output = torch.cat((embedding, hidden, context), 1)
         output = self.output_layer(output)
         log_softmax = self.softmax(output)
-        
+
         return log_softmax, next_hidden, attn_weights, cell_state
 
     def get_initial_hidden_state(self):
@@ -335,6 +340,24 @@ class AttnDecoderRNN(nn.Module):
 
 
 ######################################################################
+def train_mini_batch(
+    mini_batch,
+    encoder,
+    decoder,
+    criterion,
+    src_vocab,
+    tgt_vocab,
+    max_length=MAX_LENGTH,
+):
+    loss = 0
+    print("XXXXXX minibatch", mini_batch)
+    for sentence in mini_batch:
+        training_pair = tensors_from_pair(src_vocab, tgt_vocab, sentence)
+        input_tensor = training_pair[0]
+        target_tensor = training_pair[1]
+        loss += train(input_tensor, target_tensor, encoder, decoder, criterion)
+
+    return loss
 
 
 def train(
@@ -342,14 +365,10 @@ def train(
     target_tensor,
     encoder,
     decoder,
-    optimizer,
     criterion,
     max_length=MAX_LENGTH,
 ):
     # make sure the encoder and decoder are in training mode so dropout is applied
-    encoder.train()
-    decoder.train()
-    optimizer.zero_grad()
     annotations, hidden, cell_state = encoder(input_tensor)
 
     # Initialize decoder values
@@ -371,14 +390,9 @@ def train(
     for i, pred in enumerate(preds):
         target = target_tensor[i]
         # target needs to be a one-hot vector
-        # print("XXXXXXX", pred, target)
-        # print(target)
         loss += criterion(pred, target)
 
-    loss.backward()
-    optimizer.step()
-
-    return loss.item()
+    return loss
 
 
 ######################################################################
@@ -398,7 +412,7 @@ def translate(encoder, decoder, sentence, src_vocab, tgt_vocab, max_length=MAX_L
         input_length = input_tensor.size()[0]
 
         # encoder_outputs = torch.zeros(max_length, encoder.hidden_size, device=device)
-        encoder_outputs, hidden, cell_state  = encoder(input_tensor)
+        encoder_outputs, hidden, cell_state = encoder(input_tensor)
         # encoder_outputs =
 
         decoder_input = torch.tensor(SOS_index, device=device)
@@ -408,7 +422,7 @@ def translate(encoder, decoder, sentence, src_vocab, tgt_vocab, max_length=MAX_L
         decoder_hidden = hidden
         # decoder_cell_state = decoder.get_initial_cell_state()
         decoder_cell_state = cell_state
-        for di in range(max_length):
+        for _ in range(max_length):
             (
                 decoder_output,
                 decoder_hidden,
@@ -432,6 +446,39 @@ def translate(encoder, decoder, sentence, src_vocab, tgt_vocab, max_length=MAX_L
 
 ######################################################################
 
+def draw_annotations(french, english, a, ind):
+    b = []
+    for i in a:
+        elem = []
+        for j in i:
+            elem.append(j.item())
+        b.append(elem)
+    # Sample data
+    data = b  # Replace this with your actual data
+
+    # Custom labels for x and y axes
+    x_labels = french.split()
+    y_labels = english.split()
+
+    # Create a figure and axis objects
+    fig, ax = plt.subplots()
+
+    # Create a heatmap
+    im = ax.imshow(data, cmap='viridis', interpolation='nearest')
+
+    # Set custom labels on the x and y axes
+    ax.set_xticks(np.arange(len(x_labels)))
+    ax.set_xticklabels(x_labels)
+    ax.xaxis.tick_top()
+
+    ax.set_yticks(np.arange(len(y_labels)))
+    ax.set_yticklabels(y_labels)
+
+    # Display colorbar
+    ax.figure.colorbar(im, ax=ax)
+
+    # Save the plot as a PNG file
+    fig.savefig(f'annotations/{ind}.png')
 
 # Translate (dev/test)set takes in a list of sentences and writes out their transaltes
 def translate_sentences(
@@ -444,13 +491,24 @@ def translate_sentences(
     max_length=MAX_LENGTH,
 ):
     output_sentences = []
-    for pair in pairs[:max_num_sentences]:
+    output_attentions = []
+    for ind, pair in enumerate(pairs[:max_num_sentences]):
+        print("=============")
+        print("french:", pair[0])
+        print("english:", pair[1])
         output_words, attentions = translate(
             encoder, decoder, pair[0], src_vocab, tgt_vocab
         )
         output_sentence = " ".join(output_words)
         output_sentences.append(output_sentence)
-    return output_sentences
+        output_attentions.append(attentions)
+        # print(attentions)
+        # sys.exit(0)
+        print("translation:", output_sentence)
+
+        draw_annotations(pair[0], pair[1], attentions, ind)
+
+    return output_sentences, output_attentions
 
 
 ######################################################################
@@ -517,10 +575,16 @@ def main():
         help="hidden size of encoder/decoder, also word vector size",
     )
     ap.add_argument(
-        "--n_iters",
+        "--n_samples",
         default=100000,
         type=int,
         help="total number of examples to train on",
+    )
+    ap.add_argument(
+        "--n_epochs",
+        default=1,
+        type=int,
+        help="total number of epochs",
     )
     ap.add_argument(
         "--print_every",
@@ -595,104 +659,136 @@ def main():
         decoder.load_state_dict(state["dec_state"])
 
     # read in datafiles
-    train_pairs = split_lines(args.train_file)
+    n_samples = args.n_samples
+    train_pairs = split_lines(args.train_file)[:n_samples]
     dev_pairs = split_lines(args.dev_file)
     test_pairs = split_lines(args.test_file)
 
     # set up optimization/loss
     # .parameters() returns generator
-    params = (
-        list(encoder.parameters())
-        + list(decoder.parameters())
-        # + list(encoder.right_lstm.parameters())
-        # + list(encoder.left_lstm.parmeters())
-        # + list(decoder.lstm.parameters())
-    )
-    optimizer = optim.Adam(params, lr=args.initial_learning_rate)
+    encoder_optimizer = optim.Adam(list(encoder.parameters()), lr=args.initial_learning_rate)
+    decoder_optimizer = optim.Adam(list(decoder.parameters()), lr=args.initial_learning_rate)
     criterion = nn.NLLLoss()
 
     # optimizer may have state
     # if checkpointed, load saved state
     if args.load_checkpoint is not None:
-        optimizer.load_state_dict(state["opt_state"])
+        encoder_optimizer.load_state_dict(state["encoder_opt_state"])
+        encoder_optimizer.load_state_dict(state["encoder_opt_state"])
 
     start = time.time()
     print_loss_total = 0  # Reset every args.print_every
 
-    while iter_num < args.n_iters:
-        iter_num += 1
-        training_pair = tensors_from_pair(
-            src_vocab, tgt_vocab, random.choice(train_pairs)
-        )
-        input_tensor = training_pair[0]
-        target_tensor = training_pair[1]
-        loss = train(
-            input_tensor, target_tensor, encoder, decoder, optimizer, criterion
-        )
-        print_loss_total += loss
+    print(f"XXXXXX {len(train_pairs)=}")
+    print(f"XXXXXX {train_pairs[0]}")
 
-        if iter_num % args.checkpoint_every == 0:
-            state = {
-                "iter_num": iter_num,
-                "enc_state": encoder.state_dict(),
-                "dec_state": decoder.state_dict(),
-                "opt_state": optimizer.state_dict(),
-                "src_vocab": src_vocab,
-                "tgt_vocab": tgt_vocab,
-            }
-            filename = "state_%010d.pt" % iter_num
-            torch.save(state, filename)
-            logging.debug("wrote checkpoint to %s", filename)
+    encoder.train()
+    decoder.train()
+    epochs = args.n_epochs
+    batches = [train_pairs]
 
-        if iter_num % args.print_every == 0:
-            print_loss_avg = print_loss_total / args.print_every
-            print_loss_total = 0
-            logging.info(
-                "time since start:%s (iter:%d iter/n_iters:%d%%) loss_avg:%.4f",
-                time.time() - start,
-                iter_num,
-                iter_num / args.n_iters * 100,
-                print_loss_avg,
-            )
-            # translate from the dev set
-            translate_random_sentence(
-                encoder, decoder, dev_pairs, src_vocab, tgt_vocab, n=2
-            )
-            translated_sentences = translate_sentences(
-                encoder, decoder, dev_pairs, src_vocab, tgt_vocab
-            )
+    for epoch in range(epochs):
+        print(f"{epoch=}")
+        iter_num = 0
+        for maxi_batch in batches:
+            # use max length in maxibatch?
+            for mini_batch in maxi_batch:
+                iter_num += len(mini_batch)
+                encoder_optimizer.zero_grad()
+                decoder_optimizer.zero_grad()
+                loss = train_mini_batch(
+                    [mini_batch], encoder, decoder, criterion, src_vocab, tgt_vocab
+                )
+                print_loss_total += loss
+                print("loss", loss)
+                
+                loss.backward()
+                encoder_optimizer.step()
+                decoder_optimizer.step()
 
-            references = [
-                [
-                    clean(pair[1]).split(),
-                ]
-                for pair in dev_pairs[: len(translated_sentences)]
-            ]
-            candidates = [clean(sent).split() for sent in translated_sentences]
-            dev_bleu = corpus_bleu(references, candidates)
-            logging.info("Dev BLEU score: %.2f", dev_bleu)
+                if iter_num % args.checkpoint_every == -1:
+                    state = {
+                        "iter_num": iter_num,
+                        "enc_state": encoder.state_dict(),
+                        "dec_state": decoder.state_dict(),
+                        "encoder_opt_state": encoder_optimizer.state_dict(),
+                        "decoder_opt_state": decoder_optimizer.state_dict(),
+                        "src_vocab": src_vocab,
+                        "tgt_vocab": tgt_vocab,
+                    }
+                    filename = "state_%010d.pt" % iter_num
+                    torch.save(state, filename)
+                    logging.debug("wrote checkpoint to %s", filename)
+
+                if iter_num % args.print_every == -1:
+                    print_loss_avg = print_loss_total / args.print_every
+                    print_loss_total = 0
+                    logging.info(
+                        "time since start:%s (epoch: %d, iter:%d iter/n_samples:%d%%) loss_avg:%.4f",
+                        time.time() - start,
+                        epoch,
+                        iter_num,
+                        iter_num / args.n_samples * 100,
+                        print_loss_avg,
+                    )
+                    # translate from the dev set
+                    translate_random_sentence(
+                        encoder, decoder, dev_pairs, src_vocab, tgt_vocab, n=2
+                    )
+                    translated_sentences, attns = translate_sentences(
+                        encoder, decoder, dev_pairs, src_vocab, tgt_vocab
+                    )
+                    encoder.train()
+                    decoder.train()
+
+                    references = [
+                        [
+                            clean(pair[1]).split(),
+                        ]
+                        for pair in dev_pairs[: len(translated_sentences)]
+                    ]
+                    candidates = [clean(sent).split() for sent in translated_sentences]
+                    dev_bleu = corpus_bleu(references, candidates)
+                    logging.info("Dev BLEU score: %.2f", dev_bleu)
+
+    # while iter_num < args.n_iters:
+    #     iter_num += 1
+    #     training_pair = tensors_from_pair(
+    #         src_vocab, tgt_vocab, random.choice(train_pairs)
+    #     )
+    #     input_tensor = training_pair[0]
+    #     target_tensor = training_pair[1]
+    #     loss = train(
+    #         input_tensor, target_tensor, encoder, decoder, optimizer, criterion
+    #     )
 
     # translate test set and write to file
-    translated_sentences = translate_sentences(
-        encoder, decoder, test_pairs, src_vocab, tgt_vocab
-    )
-    with open(args.out_file, "wt", encoding="utf-8") as outf:
-        for sent in translated_sentences:
-            outf.write(clean(sent) + "\n")
+    # TODO make this into a flag
+    # translated_sentences = translate_sentences(
+    #     encoder, decoder, test_pairs, src_vocab, tgt_vocab
+    # )
+    # with open(args.out_file, "wt", encoding="utf-8") as outf:
+    #     for sent in translated_sentences:
+    #         outf.write(clean(sent) + "\n")
 
     # Visualizing Attention
-    translate_and_show_attention(
-        "on p@@ eu@@ t me faire confiance .", encoder, decoder, src_vocab, tgt_vocab
+    translated_sentences, attns = translate_sentences(
+        encoder, decoder, train_pairs, src_vocab, tgt_vocab
     )
-    translate_and_show_attention(
-        "j en suis contente .", encoder, decoder, src_vocab, tgt_vocab
-    )
-    translate_and_show_attention(
-        "vous etes tres genti@@ ls .", encoder, decoder, src_vocab, tgt_vocab
-    )
-    translate_and_show_attention(
-        "c est mon hero@@ s ", encoder, decoder, src_vocab, tgt_vocab
-    )
+
+    
+    # translate_and_show_attention(
+    #     "on p@@ eu@@ t me faire confiance .", encoder, decoder, src_vocab, tgt_vocab
+    # )
+    # translate_and_show_attention(
+    #     "j en suis contente .", encoder, decoder, src_vocab, tgt_vocab
+    # )
+    # translate_and_show_attention(
+    #     "vous etes tres genti@@ ls .", encoder, decoder, src_vocab, tgt_vocab
+    # )
+    # translate_and_show_attention(
+    #     "c est mon hero@@ s ", encoder, decoder, src_vocab, tgt_vocab
+    # )
 
 
 if __name__ == "__main__":
