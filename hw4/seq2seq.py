@@ -33,7 +33,7 @@ from nltk.translate.bleu_score import corpus_bleu
 from torch import optim
 
 
-logging.basicConfig(level=logging.DEBUG, format="%(asctime)s %(levelname)s %(message)s")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
 # we are forcing the use of cpu, if you have access to a gpu, you can set the flag to "cuda"
 # make sure you are very careful if you are using a gpu on a shared cluster/grid,
@@ -115,6 +115,7 @@ def make_vocabs(src_lang_code, tgt_lang_code, train_file):
 def tensor_from_sentence(vocab, sentence):
     """creates a tensor from a raw sentence"""
     indexes = []
+    indexes.append(SOS_index)
     for word in sentence.split():
         try:
             indexes.append(vocab.word2index[word])
@@ -127,7 +128,6 @@ def tensor_from_sentence(vocab, sentence):
 
 def tensors_from_pair(src_vocab, tgt_vocab, pair):
     """creates a tensor from a raw sentence pair"""
-    print("what is this", pair, type(pair))
     input_tensor = tensor_from_sentence(src_vocab, pair[0])
     target_tensor = tensor_from_sentence(tgt_vocab, pair[1])
     return input_tensor, target_tensor
@@ -191,7 +191,7 @@ class LSTM(nn.Module):
 class EncoderRNN(nn.Module):
     """the class for the enoder RNN"""
 
-    def __init__(self, input_size, hidden_size):
+    def __init__(self, input_size, hidden_size, dropout_p=0.1, ):
         super(EncoderRNN, self).__init__()
         self.hidden_size = hidden_size
         """Initilize a word embedding and bi-directional LSTM encoder
@@ -202,14 +202,19 @@ class EncoderRNN(nn.Module):
         """
         self.input_size = input_size
         self.hidden_size = hidden_size
+        self.dropout_p = dropout_p
         self.embedding = nn.Linear(input_size, hidden_size)
         self.right_lstm = LSTM(hidden_size, hidden_size)  # rnn -> rnn
         self.left_lstm = LSTM(hidden_size, hidden_size, reverse=True)  # rnn <- rnn
+        self.dropout = nn.Dropout(self.dropout_p)
 
     def forward(self, input):
         """runs the forward pass of the encoder
         returns the output and the hidden state
         The point of the forward pass in seq2seq is to just compute the annotations
+
+        This needs to processs SOS and EOS.
+        E.g. <SOS> foo bar <EOS>.
         """
 
         # collect the -> hidden states
@@ -221,6 +226,7 @@ class EncoderRNN(nn.Module):
                 elem, num_classes=self.input_size
             ).float()
             embedding = self.embedding(one_hot)
+            embedding = self.dropout(embedding)
             left_hidden, left_cell_state = self.right_lstm(
                 embedding, left_hidden, left_cell_state
             )
@@ -235,6 +241,7 @@ class EncoderRNN(nn.Module):
                 elem, num_classes=self.input_size
             ).float()
             embedding = self.embedding(one_hot)
+            embedding = self.dropout(embedding)
             hidden, cell_state = self.left_lstm(embedding, hidden, cell_state)
             backward_hidden_states.append(hidden)
 
@@ -253,6 +260,22 @@ class EncoderRNN(nn.Module):
     def get_initial_cell_state(self):
         return torch.zeros(1, self.hidden_size, device=device)
 
+class Attention(nn.Module):
+    """the class for the single layer attention network"""
+
+    def __init__(self, hidden_size) -> None:
+        super(Attention, self).__init__()
+        # attention weights
+        self.attn_layer = nn.Linear(3 * hidden_size, hidden_size)
+        self.attn_output = nn.Linear(hidden_size, 1)
+
+    def forward(self, hidden, encoder_state):
+        input = torch.cat((hidden, encoder_state), 1)
+        output = self.attn_layer(input)
+        output = torch.tanh(output)
+        output = self.attn_output(output)
+        return output
+
 
 class AttnDecoderRNN(nn.Module):
     """the class for the decoder"""
@@ -263,6 +286,7 @@ class AttnDecoderRNN(nn.Module):
         self.output_size = output_size
         self.dropout_p = dropout_p
         self.max_length = max_length
+        self.exp = torch.exp
 
         self.dropout = nn.Dropout(self.dropout_p)
 
@@ -273,17 +297,8 @@ class AttnDecoderRNN(nn.Module):
         self.embedding = nn.Linear(output_size, hidden_size)
         self.output_layer = nn.Linear(4 * hidden_size, output_size)
         self.lstm = LSTM(3 * hidden_size, hidden_size)
-        # attention weights
-        self.attn_layer = nn.Linear(3 * hidden_size, hidden_size)
-        self.attn_output = nn.Linear(hidden_size, 1)
-        self.exp = torch.exp
+        self.attention = Attention(hidden_size)
 
-    def forward_attn(self, hidden, encoder_state):
-        input = torch.cat((encoder_state, hidden), 1)
-        output = self.attn_layer(input)
-        output = self.tanh(output)
-        output = self.attn_output(output)
-        return output
 
     def forward(self, input, hidden, encoder_outputs, cell_state):
         """runs the forward pass of the decoder
@@ -299,19 +314,18 @@ class AttnDecoderRNN(nn.Module):
         one_hot = torch.nn.functional.one_hot(
             input.long(), num_classes=self.output_size
         ).float()
-        one_hot = one_hot.reshape(1, one_hot.shape[0])
         embedding = self.embedding(one_hot)
         embedding = self.dropout(embedding)
         attn_weights = []
         denom = 0
         for encoder_state in encoder_outputs:
-            denom += self.exp(self.forward_attn(hidden, encoder_state))
+            denom += self.exp(self.attention.forward(hidden, encoder_state))
 
         for encoder_state in encoder_outputs:
-            e_ij = self.forward_attn(hidden, encoder_state)
+            e_ij = self.attention.forward(hidden, encoder_state)
             # compatibility of the i-th translated word to the j-th source word
             a_ij = self.exp(e_ij) / denom
-            attn_weights.append(a_ij)
+            attn_weights.append(a_ij) # this vector should be the column vec
 
         # Compute context vector
         context = torch.zeros(1, 2 * self.hidden_size)
@@ -328,9 +342,9 @@ class AttnDecoderRNN(nn.Module):
         # Compute prediction based on y_{i-1}, s_{i-1}, c_i
         output = torch.cat((embedding, hidden, context), 1)
         output = self.output_layer(output)
-        log_softmax = self.softmax(output)
+        output = self.softmax(output)
 
-        return log_softmax, next_hidden, attn_weights, cell_state
+        return output, next_hidden, attn_weights, cell_state
 
     def get_initial_hidden_state(self):
         return torch.zeros(1, self.hidden_size, device=device)
@@ -373,24 +387,26 @@ def train(
 
     # Initialize decoder values
     all_attn_weights = []
-    decoder_input = torch.tensor(0)  # start of sentence
+    decoder_input = torch.tensor([SOS_index], device=device)
     preds = []
     # Collect model predictions
-    for _ in range(len(target_tensor)):
+    # print("Target tensor:", target_tensor)
+    # print("Target tensor:", target_tensor[0].long())
+    for _ in range(len(target_tensor) - 1):
         log_softmax, hidden, attn_weights, cell_state = decoder(
             decoder_input, hidden, annotations, cell_state
         )
-        ind = log_softmax.argmax()
-        decoder_input = ind
         preds.append(log_softmax)
         all_attn_weights.append(attn_weights)
+        decoder_input = torch.tensor([log_softmax.argmax().item()], device=device)
+
 
     # Update the weights in the encoder, decoder based on preds
     loss = 0
-    for i, pred in enumerate(preds):
-        target = target_tensor[i]
-        # target needs to be a one-hot vector
-        loss += criterion(pred, target)
+    for i in range(len(target_tensor) - 1):
+        prediction = preds[i]
+        target = target_tensor[i + 1] # shift one over due to SOS symbol
+        loss += criterion(prediction, target)
 
     return loss
 
@@ -406,23 +422,18 @@ def translate(encoder, decoder, sentence, src_vocab, tgt_vocab, max_length=MAX_L
     # switch the encoder and decoder to eval mode so they are not applying dropout
     encoder.eval()
     decoder.eval()
-
+ 
     with torch.no_grad():
         input_tensor = tensor_from_sentence(src_vocab, sentence)
-        input_length = input_tensor.size()[0]
-
-        # encoder_outputs = torch.zeros(max_length, encoder.hidden_size, device=device)
         encoder_outputs, hidden, cell_state = encoder(input_tensor)
-        # encoder_outputs =
 
-        decoder_input = torch.tensor(SOS_index, device=device)
+        decoder_input = torch.tensor([SOS_index], device=device)
         decoded_words = []
-        # decoder_attentions = torch.zeros(max_length, max_length)
         decoder_attentions = []
+
         decoder_hidden = hidden
-        # decoder_cell_state = decoder.get_initial_cell_state()
         decoder_cell_state = cell_state
-        for _ in range(max_length):
+        for ind in range(max_length):
             (
                 decoder_output,
                 decoder_hidden,
@@ -433,13 +444,11 @@ def translate(encoder, decoder, sentence, src_vocab, tgt_vocab, max_length=MAX_L
             )
             decoder_attentions.append(decoder_attention)
             topv, topi = decoder_output.data.topk(1)
+            decoded_words.append(tgt_vocab.index2word[topi.item()])
             if topi.item() == EOS_index:
-                decoded_words.append(EOS_token)
                 break
-            else:
-                decoded_words.append(tgt_vocab.index2word[topi.item()])
 
-            decoder_input = topi.squeeze().detach()
+            decoder_input = torch.tensor([topi.item()], device=device)
 
         return decoded_words, decoder_attentions
 
@@ -455,13 +464,16 @@ def draw_annotations(french, english, a, ind):
         b.append(elem)
     # Sample data
     data = b  # Replace this with your actual data
+    print("These should be equal", len(english.split()), len(data))
+    print("These should also be equal", len(french.split()), len(data[0]))
 
     # Custom labels for x and y axes
-    x_labels = french.split()
-    y_labels = english.split()
+    y_labels = english.split() 
+    x_labels =  ["sos"] + french.split() + ["eos"]
 
     # Create a figure and axis objects
     fig, ax = plt.subplots()
+    fig.set_size_inches(12, 10)
 
     # Create a heatmap
     im = ax.imshow(data, cmap='viridis', interpolation='nearest')
@@ -502,11 +514,10 @@ def translate_sentences(
         output_sentence = " ".join(output_words)
         output_sentences.append(output_sentence)
         output_attentions.append(attentions)
-        # print(attentions)
         # sys.exit(0)
         print("translation:", output_sentence)
 
-        draw_annotations(pair[0], pair[1], attentions, ind)
+        draw_annotations(pair[0], output_sentence, attentions, ind)
 
     return output_sentences, output_attentions
 
