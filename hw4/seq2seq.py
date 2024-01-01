@@ -166,10 +166,16 @@ class LSTM(nn.Module):
 
         return hidden, cell_state
 
+
 class EncoderRNN(nn.Module):
     """the class for the enoder RNN"""
 
-    def __init__(self, input_size, hidden_size, dropout_p=0.1, ):
+    def __init__(
+        self,
+        input_size,
+        hidden_size,
+        dropout_p=0.1,
+    ):
         super(EncoderRNN, self).__init__()
         self.hidden_size = hidden_size
         """Initilize a word embedding and bi-directional LSTM encoder
@@ -246,6 +252,7 @@ class EncoderRNN(nn.Module):
     def get_initial_cell_state(self):
         return torch.zeros(1, self.hidden_size, device=device)
 
+
 class Attention(nn.Module):
     """the class for the single layer attention network"""
 
@@ -285,7 +292,6 @@ class AttnDecoderRNN(nn.Module):
         self.lstm = LSTM(4 * hidden_size, 2 * hidden_size)
         self.attention = Attention(hidden_size)
 
-
     def forward(self, input, hidden, encoder_outputs, cell_state):
         """runs the forward pass of the decoder
         returns the log_softmax, hidden state, and attn_weights
@@ -311,7 +317,7 @@ class AttnDecoderRNN(nn.Module):
             e_ij = self.attention.forward(hidden, encoder_state)
             # compatibility of the i-th translated word to the j-th source word
             a_ij = self.exp(e_ij) / denom
-            attn_weights.append(a_ij) 
+            attn_weights.append(a_ij)
 
         # Compute context vector
         context = torch.zeros(1, 2 * self.hidden_size)
@@ -385,12 +391,11 @@ def train(
         all_attn_weights.append(attn_weights)
         decoder_input = torch.tensor([log_softmax.argmax().item()], device=device)
 
-
     # Update the weights in the encoder, decoder based on preds
     loss = 0
     for i in range(len(target_tensor) - 1):
         prediction = preds[i]
-        target = target_tensor[i + 1] # shift one over due to SOS symbol
+        target = target_tensor[i + 1]  # shift one over due to SOS symbol
         loss += criterion(prediction, target)
 
     return loss
@@ -407,7 +412,7 @@ def translate(encoder, decoder, sentence, src_vocab, tgt_vocab, max_length=MAX_L
     # switch the encoder and decoder to eval mode so they are not applying dropout
     encoder.eval()
     decoder.eval()
- 
+
     with torch.no_grad():
         input_tensor = tensor_from_sentence(src_vocab, sentence)
         encoder_outputs, cell_states = encoder(input_tensor)
@@ -440,6 +445,7 @@ def translate(encoder, decoder, sentence, src_vocab, tgt_vocab, max_length=MAX_L
 
 ######################################################################
 
+
 def draw_annotations(french, english, a, ind):
     b = []
     for i in a:
@@ -453,15 +459,15 @@ def draw_annotations(french, english, a, ind):
     print("These should also be equal", len(french.split()), len(data[0]))
 
     # Custom labels for x and y axes
-    y_labels = english.split() 
-    x_labels =  ["sos"] + french.split() + ["eos"]
+    y_labels = english.split()
+    x_labels = ["sos"] + french.split() + ["eos"]
 
     # Create a figure and axis objects
     fig, ax = plt.subplots()
     fig.set_size_inches(12, 10)
 
     # Create a heatmap
-    im = ax.imshow(data, cmap='viridis', interpolation='nearest')
+    im = ax.imshow(data, cmap="viridis", interpolation="nearest")
 
     # Set custom labels on the x and y axes
     ax.set_xticks(np.arange(len(x_labels)))
@@ -475,7 +481,8 @@ def draw_annotations(french, english, a, ind):
     ax.figure.colorbar(im, ax=ax)
 
     # Save the plot as a PNG file
-    fig.savefig(f'annotations/{ind}.png')
+    fig.savefig(f"annotations/{ind}.png")
+
 
 # Translate (dev/test)set takes in a list of sentences and writes out their transaltes
 def translate_sentences(
@@ -662,8 +669,12 @@ def main():
 
     # set up optimization/loss
     # .parameters() returns generator
-    encoder_optimizer = optim.Adam(list(encoder.parameters()), lr=args.initial_learning_rate)
-    decoder_optimizer = optim.Adam(list(decoder.parameters()), lr=args.initial_learning_rate)
+    encoder_optimizer = optim.Adam(
+        list(encoder.parameters()), lr=args.initial_learning_rate
+    )
+    decoder_optimizer = optim.Adam(
+        list(decoder.parameters()), lr=args.initial_learning_rate
+    )
     criterion = nn.NLLLoss()
 
     # optimizer may have state
@@ -694,7 +705,7 @@ def main():
                 )
                 print_loss_total += loss
                 print("loss", loss)
-                
+
                 loss.backward()
                 encoder_optimizer.step()
                 decoder_optimizer.step()
@@ -769,7 +780,6 @@ def main():
         encoder, decoder, train_pairs, src_vocab, tgt_vocab
     )
 
-    
     # translate_and_show_attention(
     #     "on p@@ eu@@ t me faire confiance .", encoder, decoder, src_vocab, tgt_vocab
     # )
